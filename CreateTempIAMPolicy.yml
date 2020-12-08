@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create Temporary IAM Policy
+
+Parameters:
+  Period:
+    Description: Enter minutes of access period 
+    Default: 180
+    Type: Number
+    
+Resources:
+
+  LambdaExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: LambdaExecPolicy
+        PolicyDocument:
+          Statement:
+          - Sid: AccessToCWLog
+            Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: "*"
+          - Sid: ChangeNatgwAndRouteTable
+            Effect: Allow
+            Action:
+            - iam:PutUserPolicy
+            Resource: "*"
+            
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: temp-access
+      Environment:
+        Variables:
+          Period: !Ref Period
+      Description: Create temporary IAM Policy
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt [ LambdaExecRole, Arn ]
+      Runtime: python3.8
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import datetime
+          
+          minutes = os.environ['Period']
+          
+          iam = boto3.client('iam')
+
+          period = datetime.timedelta(minutes=int(minutes))
+          now = datetime.datetime.now(datetime.timezone.utc)
+          end = now + period
+          
+          # Change DateTime format
+          start_time = now.isoformat('T','seconds').replace('+00:00', 'Z')
+          end_time = end.isoformat('T','seconds').replace('+00:00', 'Z')
+          
+          # Create a policy
+          iam_policy = {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Action": "*",
+                      "Resource": "*",
+                      "Condition": {
+                          "DateGreaterThan": {"aws:CurrentTime": start_time},
+                          "DateLessThan": {"aws:CurrentTime": end_time}
+                      }
+                  }
+              ]
+          }
+          
+          def lambda_handler(event, context):
+          
+            user = event["user"]
+          
+            iam.put_user_policy(
+              UserName=user,
+              PolicyName='prd-access-policy',
+              PolicyDocument=json.dumps(iam_policy)
+            )
+            
+            response = 'End time is ' + end_time
+            
+            return response
